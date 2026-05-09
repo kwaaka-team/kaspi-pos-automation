@@ -33,6 +33,12 @@ Kaspi POS Automation предоставляет REST API для работы с 
   - [POST /api/refund/create](#post-apirefundcreate)
 - [Session — Проверка сессии](#session--проверка-сессии)
   - [GET /api/session/check](#get-apisessioncheck)
+- [Webhooks — Уведомления](#webhooks--уведомления)
+  - [Настройка](#настройка)
+  - [События](#события)
+  - [Формат payload](#формат-payload)
+  - [Подпись (HMAC)](#подпись-hmac)
+  - [Повторные попытки (Retry)](#повторные-попытки-retry)
 
 ---
 
@@ -532,6 +538,139 @@ curl "http://localhost:3000/api/session/check" \
 | `400` | Отсутствуют обязательные параметры |
 | `401` | Отсутствуют или невалидные заголовки сессии |
 | `500` | Внутренняя ошибка сервера или ошибка Kaspi API |
+
+---
+
+## Webhooks — Уведомления
+
+Система автоматически отслеживает статусы созданных QR- и invoice-платежей (polling каждые 3 секунды) и отправляет HTTP POST-уведомления (webhooks) на указанные URL при изменении статуса платежа.
+
+### Настройка
+
+Вебхуки настраиваются в файле `webhooks.json` в корне проекта. Файл содержит массив объектов:
+
+```json
+[
+  {
+    "url": "https://example.com/webhook",
+    "events": ["payment.success", "payment.failed", "payment.expired"],
+    "secret": "your-webhook-secret"
+  }
+]
+```
+
+| Поле | Тип | Обязательный | Описание |
+|---|---|---|---|
+| `url` | `string` | ✅ | URL, на который будут отправляться уведомления |
+| `events` | `string[]` | ✅ | Список событий для подписки |
+| `secret` | `string` | ❌ | Секрет для HMAC-подписи (рекомендуется) |
+
+> 💡 Для начала скопируйте `webhooks.example.json` → `webhooks.json` и отредактируйте.
+
+Можно указать несколько вебхуков с разными URL и событиями:
+
+```json
+[
+  {
+    "url": "https://my-crm.com/kaspi-hook",
+    "events": ["payment.success"],
+    "secret": "crm-secret-key"
+  },
+  {
+    "url": "https://my-accounting.com/hook",
+    "events": ["payment.success", "payment.failed", "payment.expired"],
+    "secret": "accounting-secret"
+  }
+]
+```
+
+### События
+
+| Событие | Описание | Когда срабатывает |
+|---|---|---|
+| `payment.success` | Платёж успешно проведён | QR: статус `Processed`; Invoice: статус `Processed` |
+| `payment.failed` | Платёж отклонён / отменён | QR: `CancelledByUser`, `Rejected`, `Error` и др.; Invoice: `RemotePaymentCanceled`, `RemotePaymentRejected` |
+| `payment.expired` | Время оплаты истекло | QR: `QrTokenDiscarded`, `Expired`; Invoice: `Expired` |
+
+### Формат payload
+
+При срабатывании события на каждый подписанный URL отправляется POST-запрос с JSON-телом:
+
+```json
+{
+  "event": "payment.success",
+  "paymentId": "123456",
+  "type": "qr",
+  "status": "Processed",
+  "statusDesc": "Операция проведена успешно",
+  "amount": 5000,
+  "qrToken": "QR-TOKEN-...",
+  "receiptUrl": "https://...",
+  "orderNumber": "ORDER-001",
+  "data": { ... },
+  "timestamp": "2026-05-10T00:00:00.000Z"
+}
+```
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `event` | `string` | Название события (`payment.success`, `payment.failed`, `payment.expired`) |
+| `paymentId` | `string` | ID платежа (QR operationId или invoice operationId) |
+| `type` | `string` | Тип платежа: `qr` или `invoice` |
+| `status` | `string` | Финальный статус от Kaspi API |
+| `statusDesc` | `string` | Описание статуса |
+| `amount` | `number\|null` | Сумма платежа в тенге |
+| `qrToken` | `string\|null` | QR-токен (только для QR-платежей) |
+| `receiptUrl` | `string\|null` | Ссылка на чек |
+| `orderNumber` | `string\|null` | Номер заказа |
+| `data` | `object` | Полные данные ответа от Kaspi API |
+| `timestamp` | `string` | Время отправки уведомления (ISO 8601) |
+
+### Подпись (HMAC)
+
+Каждый запрос подписывается HMAC SHA-256 с использованием `secret` из конфигурации вебхука. Подпись передаётся в заголовке:
+
+```
+X-Webhook-Signature: sha256=<hex-digest>
+```
+
+**Проверка подписи на стороне получателя (Node.js):**
+
+```javascript
+import crypto from 'crypto';
+
+const verifySignature = (body, signature, secret) => {
+  const expected = 'sha256=' + crypto
+    .createHmac('sha256', secret)
+    .update(body)
+    .digest('hex');
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expected)
+  );
+};
+
+// В обработчике запроса:
+const rawBody = JSON.stringify(req.body); // или используйте raw body
+const sig = req.headers['x-webhook-signature'];
+if (!verifySignature(rawBody, sig, 'your-webhook-secret')) {
+  return res.status(401).send('Invalid signature');
+}
+```
+
+### Повторные попытки (Retry)
+
+Если доставка вебхука не удалась (ошибка сети, таймаут, HTTP-ошибка), система выполняет до **3 попыток** с нарастающей задержкой:
+
+| Попытка | Задержка |
+|---|---|
+| 1-я (первая) | Немедленно |
+| 2-я | 5 секунд |
+| 3-я | 30 секунд |
+
+- Таймаут запроса: **10 секунд**.
+- Очередь повторных попыток сохраняется в `webhook-retries.json` и переживает перезапуск сервера.
+- После 3 неудачных попыток уведомление отбрасывается (логируется ошибка).
 
 ---
 

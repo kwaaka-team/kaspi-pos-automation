@@ -33,6 +33,12 @@ Kaspi POS Automation Kaspi Pay төлемдерімен жұмыс істеу ү
   - [POST /api/refund/create](#post-apirefundcreate)
 - [Session — Сессияны тексеру](#session--сессияны-тексеру)
   - [GET /api/session/check](#get-apisessioncheck)
+- [Webhooks — Хабарламалар](#webhooks--хабарламалар)
+  - [Баптау](#баптау)
+  - [Оқиғалар](#оқиғалар)
+  - [Payload форматы](#payload-форматы)
+  - [Қолтаңба (HMAC)](#қолтаңба-hmac)
+  - [Қайта жіберу (Retry)](#қайта-жіберу-retry)
 
 ---
 
@@ -532,6 +538,139 @@ curl "http://localhost:3000/api/session/check" \
 | `400` | Міндетті параметрлер жоқ |
 | `401` | Сессия тақырыптары жоқ немесе жарамсыз |
 | `500` | Сервердің ішкі қатесі немесе Kaspi API қатесі |
+
+---
+
+## Webhooks — Хабарламалар
+
+Жүйе жасалған QR және invoice төлемдерінің статустарын автоматты түрде бақылайды (әр 3 секунд сайын polling) және төлем статусы өзгерген кезде көрсетілген URL-дарға HTTP POST хабарламаларын (webhooks) жібереді.
+
+### Баптау
+
+Вебхуктар жобаның түбіріндегі `webhooks.json` файлында баптаулады. Файл объектілер массивін қамтиды:
+
+```json
+[
+  {
+    "url": "https://example.com/webhook",
+    "events": ["payment.success", "payment.failed", "payment.expired"],
+    "secret": "your-webhook-secret"
+  }
+]
+```
+
+| Өріс | Түрі | Міндетті | Сипаттама |
+|---|---|---|---|
+| `url` | `string` | ✅ | Хабарламалар жіберілетін URL |
+| `events` | `string[]` | ✅ | Жазылу оқиғаларының тізімі |
+| `secret` | `string` | ❌ | HMAC қолтаңбасы үшін құпия (ұсынылады) |
+
+> 💡 Бастау үшін `webhooks.example.json` → `webhooks.json` көшіріп, өңдеңіз.
+
+Әр түрлі URL және оқиғалармен бірнеше вебхук көрсетуге болады:
+
+```json
+[
+  {
+    "url": "https://my-crm.com/kaspi-hook",
+    "events": ["payment.success"],
+    "secret": "crm-secret-key"
+  },
+  {
+    "url": "https://my-accounting.com/hook",
+    "events": ["payment.success", "payment.failed", "payment.expired"],
+    "secret": "accounting-secret"
+  }
+]
+```
+
+### Оқиғалар
+
+| Оқиға | Сипаттама | Қашан іске қосылады |
+|---|---|---|
+| `payment.success` | Төлем сәтті өтті | QR: `Processed` статусы; Invoice: `Processed` статусы |
+| `payment.failed` | Төлем қабылданбады / бас тартылды | QR: `CancelledByUser`, `Rejected`, `Error` және т.б.; Invoice: `RemotePaymentCanceled`, `RemotePaymentRejected` |
+| `payment.expired` | Төлем уақыты аяқталды | QR: `QrTokenDiscarded`, `Expired`; Invoice: `Expired` |
+
+### Payload форматы
+
+Оқиға іске қосылғанда әрбір жазылған URL-ға JSON денесі бар POST сұрау жіберіледі:
+
+```json
+{
+  "event": "payment.success",
+  "paymentId": "123456",
+  "type": "qr",
+  "status": "Processed",
+  "statusDesc": "Операция сәтті өтті",
+  "amount": 5000,
+  "qrToken": "QR-TOKEN-...",
+  "receiptUrl": "https://...",
+  "orderNumber": "ORDER-001",
+  "data": { ... },
+  "timestamp": "2026-05-10T00:00:00.000Z"
+}
+```
+
+| Өріс | Түрі | Сипаттама |
+|---|---|---|
+| `event` | `string` | Оқиға атауы (`payment.success`, `payment.failed`, `payment.expired`) |
+| `paymentId` | `string` | Төлем ID-сі (QR operationId немесе invoice operationId) |
+| `type` | `string` | Төлем түрі: `qr` немесе `invoice` |
+| `status` | `string` | Kaspi API-ден финалды статус |
+| `statusDesc` | `string` | Статус сипаттамасы |
+| `amount` | `number\|null` | Төлем сомасы теңгемен |
+| `qrToken` | `string\|null` | QR-токен (тек QR-төлемдер үшін) |
+| `receiptUrl` | `string\|null` | Чекке сілтеме |
+| `orderNumber` | `string\|null` | Тапсырыс нөмірі |
+| `data` | `object` | Kaspi API-ден толық жауап деректері |
+| `timestamp` | `string` | Хабарлама жіберу уақыты (ISO 8601) |
+
+### Қолтаңба (HMAC)
+
+Әрбір сұрау вебхук конфигурациясындағы `secret` көмегімен HMAC SHA-256 арқылы қолтаңбаланады. Қолтаңба тақырыпта жіберіледі:
+
+```
+X-Webhook-Signature: sha256=<hex-digest>
+```
+
+**Қабылдаушы жағында қолтаңбаны тексеру (Node.js):**
+
+```javascript
+import crypto from 'crypto';
+
+const verifySignature = (body, signature, secret) => {
+  const expected = 'sha256=' + crypto
+    .createHmac('sha256', secret)
+    .update(body)
+    .digest('hex');
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expected)
+  );
+};
+
+// Сұрау өңдеушісінде:
+const rawBody = JSON.stringify(req.body); // немесе raw body пайдаланыңыз
+const sig = req.headers['x-webhook-signature'];
+if (!verifySignature(rawBody, sig, 'your-webhook-secret')) {
+  return res.status(401).send('Invalid signature');
+}
+```
+
+### Қайта жіберу (Retry)
+
+Вебхук жеткізілмесе (желі қатесі, таймаут, HTTP қатесі), жүйе **3 әрекетке** дейін өсетін кідіріспен орындайды:
+
+| Әрекет | Кідіріс |
+|---|---|
+| 1-ші (бірінші) | Бірден |
+| 2-ші | 5 секунд |
+| 3-ші | 30 секунд |
+
+- Сұрау таймауты: **10 секунд**.
+- Қайта жіберу кезегі `webhook-retries.json` файлында сақталады және сервер қайта іске қосылғанда жоғалмайды.
+- 3 сәтсіз әрекеттен кейін хабарлама жойылады (қате логқа жазылады).
 
 ---
 
