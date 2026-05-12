@@ -82,6 +82,12 @@
         background: #ff3b30;
         color: #fff;
       }
+      a.btn {
+        display: block;
+        box-sizing: border-box;
+        text-align: center;
+        text-decoration: none;
+      }
       .status-bar {
         padding: 10px 16px;
         border-radius: 10px;
@@ -413,6 +419,9 @@
               </div>
               <div id="qrTimer" style="text-align: center; font-size: 14px; color: #888; margin-bottom: 12px"></div>
               <div id="qrCodeContainer" style="text-align: center; margin: 16px 0"></div>
+              <a id="qrPayLink" class="btn btn-primary hidden" href="#" target="_blank" rel="noopener noreferrer">
+                Открыть ссылку оплаты
+              </a>
               <div id="qrDetails"></div>
               <button class="btn btn-secondary" onclick="resetQr()">Новый QR</button>
             </div>

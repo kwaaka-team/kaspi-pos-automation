@@ -436,6 +436,9 @@ const createQr = async () => {
       const waitTimeout = parseInt(options.qrCodeScanWaitTimeout) || 180;
 
       $('qrCodeContainer').innerHTML = generateQrSvg(resp.Data.QrToken);
+      const payLink = $('qrPayLink');
+      payLink.href = resp.Data.QrToken;
+      payLink.classList.remove('hidden');
       $('qrStatus').className = 'status-bar status-info';
       $('qrStatus').textContent = 'Ожидание сканирования...';
       $('qrResult').classList.remove('hidden');
@@ -460,6 +463,9 @@ const resetQr = () => {
   $('qrResult').classList.add('hidden');
   $('qrCodeContainer').innerHTML = '';
   $('qrTimer').textContent = '';
+  const payLink = $('qrPayLink');
+  payLink.href = '#';
+  payLink.classList.add('hidden');
 };
 
 // ─── Client Phone Lookup ───

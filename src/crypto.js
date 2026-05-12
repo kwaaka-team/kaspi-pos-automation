@@ -1,11 +1,9 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import {fileURLToPath} from 'url';
-import {ecKeyPair} from './config.js';
+import { ecKeyPair, DATA_DIR } from './config.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ECDH_FILE = path.join(__dirname, '..', 'ecdh-keypair.json');
+const ECDH_FILE = path.join(DATA_DIR, 'ecdh-keypair.json');
 
 // ─── ECDH ───
 
