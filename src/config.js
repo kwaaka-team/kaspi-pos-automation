@@ -81,8 +81,8 @@ export const KASPI_QRPAY_URL = 'https://qrpay.kaspi.kz';
 // parameters and may reject requests with arbitrary or unknown values.
 
 export const APP = {
-  version: '4.105',
-  build: '1070',
+  version: '4.110.1',
+  build: '1099',
   platform: 'iOS',
   platformVer: '18.5',
   locale: 'ru-RU',
